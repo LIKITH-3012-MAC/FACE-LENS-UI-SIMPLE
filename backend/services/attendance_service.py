@@ -1,0 +1,203 @@
+import logging
+from collections import defaultdict
+from datetime import date, datetime, time, timedelta
+from typing import Any, Dict, Optional, Tuple
+from zoneinfo import ZoneInfo
+
+from backend.config import settings
+from backend.database.connection import execute_query
+from backend.database.repository import repo
+from backend.services.email_service import email_service
+
+logger = logging.getLogger("smart_attendance.attendance_service")
+
+class AttendanceService:
+    """
+    Attendance business rules & MySQL persistence (Section 26 & Resend Integration).
+    - Authoritative timestamp generation in Asia/Kolkata timezone
+    - Checks today's attendance in Cloud MySQL
+    - Enforces temporal confirmation (MIN_STABLE_RECOGNITIONS = 3)
+    - In-memory debouncer/cooldown (60 seconds)
+    - Evaluates Present vs Late based on ATTENDANCE_CUTOFF_TIME
+    - Captures Client IP, Latitude, and Longitude
+    - Parameterized INSERT into Cloud MySQL attendance table
+    - Dispatches student confirmation email via Resend (never rolling back on email failure)
+    - Formats Section 12 terminal logs
+    """
+
+    def __init__(self):
+        self.cooldown_cache: Dict[str, datetime] = {}
+        self.streak_tracker: Dict[str, int] = defaultdict(int)
+        self.cooldown_seconds = 60
+        self.min_stable_recognitions = getattr(settings, "MIN_STABLE_RECOGNITIONS", 3)
+        self.tz_name = getattr(settings, "TIMEZONE", "Asia/Kolkata")
+
+    def _get_now_in_tz(self) -> datetime:
+        """Return current datetime localized to configured timezone (e.g. Asia/Kolkata)."""
+        try:
+            return datetime.now(ZoneInfo(self.tz_name))
+        except Exception:
+            return datetime.now()
+
+    def check_temporal_confirmation(self, student_id: str) -> bool:
+        """Requires MIN_STABLE_RECOGNITIONS consecutive recognitions before marking."""
+        self.streak_tracker[student_id] += 1
+        return self.streak_tracker[student_id] >= self.min_stable_recognitions
+
+    def reset_streak(self, student_id: str):
+        self.streak_tracker[student_id] = 0
+
+    def evaluate_status(self, arrival_time: time) -> str:
+        """Evaluate Present vs Late against ATTENDANCE_CUTOFF_TIME."""
+        try:
+            parts = settings.ATTENDANCE_CUTOFF_TIME.split(":")
+            cutoff = time(int(parts[0]), int(parts[1]), int(parts[2]) if len(parts) > 2 else 0)
+        except Exception:
+            cutoff = time(9, 30, 0)
+        return "Present" if arrival_time <= cutoff else "Late"
+
+    def mark_attendance(
+        self,
+        student_id: str,
+        face_distance: float,
+        attendance_date: Optional[date] = None,
+        attendance_time: Optional[time] = None,
+        ip_address: Optional[str] = None,
+        latitude: Optional[float] = None,
+        longitude: Optional[float] = None,
+        location_accuracy: Optional[float] = None,
+        mode: str = "automatic"
+    ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        """
+        Process recognition event for attendance marking, MySQL insertion, and Resend email dispatch.
+        Returns: (success, message, record_dict)
+        """
+        now = self._get_now_in_tz()
+        cur_date = attendance_date or now.date()
+        cur_time = attendance_time or now.time()
+        time_str = cur_time.strftime("%H:%M:%S")
+        date_str = str(cur_date)
+
+        # 1. Fetch student info from Cloud MySQL
+        student = repo.get_student_by_id(student_id)
+        student_name = student["name"] if student else student_id
+
+        # 2. In-memory cooldown check
+        last_marked = self.cooldown_cache.get(student_id)
+        if last_marked and (now - last_marked).total_seconds() < self.cooldown_seconds:
+            return False, f"Cooldown active for {student_name}", None
+
+        # 3. Cloud MySQL duplicate check for today
+        if repo.has_student_attended_today(student_id, date_str):
+            print(f"\n[ATTENDANCE]\n{student_name} already marked today.\nNo duplicate record created.\n")
+            self.cooldown_cache[student_id] = now
+            return False, f"{student_name} already marked today", None
+
+        # 4. Evaluate Present vs Late
+        status = self.evaluate_status(cur_time)
+
+        # 5. Insert into Cloud MySQL attendance table
+        ok, record = repo.insert_attendance_record(
+            student_id=student_id,
+            attendance_date=date_str,
+            attendance_time=time_str,
+            status=status,
+            face_distance=face_distance,
+            confidence_score=round((1.0 - face_distance) * 100.0, 1),
+            ip_address=ip_address,
+            latitude=latitude,
+            longitude=longitude,
+            location_accuracy=location_accuracy
+        )
+
+        if ok and record:
+            self.cooldown_cache[student_id] = now
+            self.reset_streak(student_id)
+
+            # Retrieve updated stats
+            stats = repo.get_student_attendance_stats(student_id, date_str)
+            today_count = stats.get("today_count", 1)
+            total_count = stats.get("total_attendance_count", 1)
+            last_attendance_time = stats.get("last_attendance_time", time_str)
+
+            # Section 21 Required Terminal Logging
+            if latitude is not None and longitude is not None:
+                acc_part = f", Acc {location_accuracy:.1f}m" if location_accuracy is not None else ""
+                loc_str = f"Lat {latitude:.6f}, Lon {longitude:.6f}{acc_part}"
+            else:
+                loc_str = "Not Available"
+            print(
+                f"\n[FACE] Recognized student\n"
+                f"[FACE] Student ID: {student_id}\n"
+                f"[FACE] Name: {student_name}\n"
+                f"[FACE] Distance: {face_distance:.2f}\n"
+                f"[FACE] Tolerance: 0.50\n\n"
+                f"[ATTENDANCE] {'Manual confirmation received' if mode.lower() == 'manual' else 'Automatic attendance processed'}\n"
+                f"[ATTENDANCE] Date: {date_str}\n"
+                f"[ATTENDANCE] Time: {time_str} IST\n"
+                f"[ATTENDANCE] Location: {loc_str}\n"
+                f"[ATTENDANCE] IP: {ip_address or 'Local'}\n\n"
+                f"[MYSQL] Attendance inserted successfully\n"
+                f"[MYSQL] Today's count: {today_count}\n"
+                f"[MYSQL] Total count: {total_count}\n"
+            )
+
+            # 6. Resend Email Notification Dispatch (Section 3 & 4)
+            # Only sent after database insertion succeeds. Email failure does NOT rollback attendance.
+            email_notification = "skipped"
+            student_email = student.get("email") if student else None
+
+            if student_email and "@" in student_email:
+                email_date = now.strftime("%d %B %Y")
+                email_time = now.strftime("%I:%M:%S %p IST")
+
+                email_ok, email_msg, resend_id = email_service.send_attendance_notification(
+                    student_name=student_name,
+                    student_id=student_id,
+                    roll_number=student.get("roll_number", ""),
+                    department=student.get("department", ""),
+                    section=student.get("section", ""),
+                    email=student_email,
+                    attendance_date=email_date,
+                    attendance_time=email_time,
+                    status=status,
+                    face_distance=face_distance,
+                    ip_address=ip_address,
+                    latitude=latitude,
+                    longitude=longitude,
+                    location_accuracy=location_accuracy,
+                    today_count=today_count,
+                    total_attendance_count=total_count
+                )
+                email_notification = "sent" if email_ok else "failed"
+            else:
+                print(f"[RESEND] No registered email address found for student {student_id}. Notification skipped.\n")
+
+            enhanced_record = {
+                **record,
+                "student_id": student_id,
+                "name": student_name,
+                "roll_number": student.get("roll_number", "") if student else "",
+                "department": student.get("department", "") if student else "",
+                "section": student.get("section", "") if student else "",
+                "email": student_email,
+                "status": status,
+                "date": date_str,
+                "time": time_str,
+                "timezone": self.tz_name,
+                "face_distance": face_distance,
+                "ip_address": ip_address,
+                "latitude": latitude,
+                "longitude": longitude,
+                "location_accuracy": location_accuracy,
+                "today_count": today_count,
+                "total_attendance_count": total_count,
+                "last_attendance_time": last_attendance_time,
+                "email_notification": email_notification
+            }
+
+            return True, f"{student_name} marked {status}", enhanced_record
+
+        return False, "Failed to record attendance in database", None
+
+attendance_service = AttendanceService()
