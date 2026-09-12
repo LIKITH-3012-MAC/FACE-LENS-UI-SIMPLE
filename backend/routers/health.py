@@ -12,15 +12,8 @@ def get_system_health():
     """Check API server, database connectivity, camera availability, and face model status."""
     db_connected, db_message = check_database_connection()
 
-    # Camera probe check
-    camera_available = False
-    try:
-        cap = cv2.VideoCapture(settings.CAMERA_INDEX)
-        if cap.isOpened():
-            camera_available = True
-            cap.release()
-    except Exception:
-        camera_available = False
+    # Camera configuration check (avoid hardware webcam polling)
+    camera_available = settings.CAMERA_INDEX is not None
 
     # Face recognition model status
     from backend.services.recognition_service import recognition_service

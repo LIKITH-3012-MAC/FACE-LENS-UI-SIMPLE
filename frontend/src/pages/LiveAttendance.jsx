@@ -276,15 +276,12 @@ export default function LiveAttendance() {
     setIsStreaming(false);
   };
 
-  // Auto-start browser camera on mount
+  // Stop camera on unmount
   useEffect(() => {
-    if (cameraSource === 'browser_camera') {
-      startBrowserCamera();
-    }
     return () => {
       stopBrowserCamera();
     };
-  }, [cameraSource]);
+  }, []);
 
   const handleStart = () => {
     if (cameraSource === 'browser_camera') {
