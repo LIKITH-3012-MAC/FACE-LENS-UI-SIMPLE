@@ -19,9 +19,9 @@ class DatabaseRepository:
             SELECT id, student_id, name, roll_number, department, year, section, email,
                    face_dataset_count, is_trained, model_version, trained_at, created_at, updated_at
             FROM students
-            WHERE student_id = %s
+            WHERE student_id = %s OR roll_number = %s
         """
-        return execute_query(query, (student_id,), fetchone=True)
+        return execute_query(query, (student_id, student_id), fetchone=True)
 
     @staticmethod
     def get_all_registered_students() -> List[Dict[str, Any]]:
@@ -118,8 +118,11 @@ class DatabaseRepository:
 
     @staticmethod
     def has_student_attended_today(student_id: str, attendance_date: str) -> bool:
-        query = 'SELECT id FROM attendance WHERE student_id = %s AND attendance_date = %s'
-        row = execute_query(query, (student_id, attendance_date), fetchone=True)
+        student = DatabaseRepository.get_student_by_id(student_id)
+        canonical_id = student["student_id"] if student else student_id
+        roll_num = student.get("roll_number") if student else student_id
+        query = 'SELECT id FROM attendance WHERE (student_id = %s OR student_id = %s) AND attendance_date = %s'
+        row = execute_query(query, (canonical_id, roll_num, attendance_date), fetchone=True)
         return bool(row)
 
     @staticmethod
@@ -164,27 +167,31 @@ class DatabaseRepository:
         - already_marked_today: True if today_count > 0
         """
         try:
+            student = DatabaseRepository.get_student_by_id(student_id)
+            canonical_id = student["student_id"] if student else student_id
+            roll_num = student.get("roll_number") if student else student_id
+
             if not attendance_date:
                 now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
                 attendance_date = now_ist.strftime("%Y-%m-%d")
 
             today_row = execute_query(
-                "SELECT COUNT(*) AS cnt FROM attendance WHERE student_id = %s AND attendance_date = %s",
-                (student_id, attendance_date),
+                "SELECT COUNT(*) AS cnt FROM attendance WHERE (student_id = %s OR student_id = %s) AND attendance_date = %s",
+                (canonical_id, roll_num, attendance_date),
                 fetchone=True
             )
             today_count = int(today_row.get("cnt", 0)) if today_row else 0
 
             total_row = execute_query(
-                "SELECT COUNT(*) AS cnt FROM attendance WHERE student_id = %s",
-                (student_id,),
+                "SELECT COUNT(*) AS cnt FROM attendance WHERE student_id = %s OR student_id = %s",
+                (canonical_id, roll_num),
                 fetchone=True
             )
             total_count = int(total_row.get("cnt", 0)) if total_row else 0
 
             last_row = execute_query(
-                "SELECT attendance_date, attendance_time FROM attendance WHERE student_id = %s ORDER BY attendance_date DESC, attendance_time DESC, id DESC LIMIT 1",
-                (student_id,),
+                "SELECT attendance_date, attendance_time FROM attendance WHERE student_id = %s OR student_id = %s ORDER BY attendance_date DESC, attendance_time DESC, id DESC LIMIT 1",
+                (canonical_id, roll_num),
                 fetchone=True
             )
             last_time_str = "Not marked"

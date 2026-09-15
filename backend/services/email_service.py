@@ -36,7 +36,8 @@ class EmailService:
         longitude: Optional[float] = None,
         location_accuracy: Optional[float] = None,
         today_count: int = 1,
-        total_attendance_count: int = 1
+        total_attendance_count: int = 1,
+        year: Optional[str] = None
     ) -> Tuple[bool, str, Optional[str]]:
         """
         Dispatch attendance confirmation email via Resend API to the student's registered email.
@@ -76,22 +77,20 @@ class EmailService:
         # Plain Text Fallback
         text_body = f"""Hello {student_name},
 
-Your attendance has been successfully recorded in Sakra-Lens.
+Your attendance has been successfully recorded.
 
-Student Details
--------------------------
-Name: {student_name}
 Student ID: {student_id}
-Roll Number: {roll_number or 'N/A'}
+Roll Number: {roll_number or student_id}
 Department: {department or 'N/A'}
+Year: {year or 'N/A'}
 Section: {section or 'N/A'}
 
-Attendance Details
--------------------------
 Date: {attendance_date}
 Time: {attendance_time}
-Timezone: Asia/Kolkata
 Status: {status}
+
+Today's Attendance: {today_count}
+Total Attendance Records: {total_attendance_count}
 
 Recognition Details
 -------------------------
@@ -103,11 +102,6 @@ Location
 Latitude: {lat_str}
 Longitude: {lon_str}
 Accuracy: {acc_str}
-
-Attendance Count
--------------------------
-Today's Attendance: {today_count}
-Total Attendance Records: {total_attendance_count}
 
 This attendance was recorded through the Sakra-Lens Smart Attendance System.
 
@@ -169,6 +163,10 @@ Sakra-Lens
                 <tr>
                   <td style="padding:9px 14px; color:#6b7280; border-bottom:1px solid #f3f4f6;">Roll Number</td>
                   <td style="padding:9px 14px; font-weight:600; color:#111827; border-bottom:1px solid #f3f4f6;">{roll_number or 'N/A'}</td>
+                </tr>
+                <tr>
+                  <td style="padding:9px 14px; color:#6b7280; border-bottom:1px solid #f3f4f6;">Academic Year</td>
+                  <td style="padding:9px 14px; font-weight:600; color:#111827; border-bottom:1px solid #f3f4f6;">{year or 'N/A'}</td>
                 </tr>
                 <tr>
                   <td style="padding:9px 14px; color:#6b7280;">Department & Section</td>
@@ -246,8 +244,12 @@ Sakra-Lens
 
         # Dispatch via Resend API
         try:
-            print("\n[RESEND] Sending confirmation email...")
-            print(f"[RESEND] Recipient: {email}")
+            print(
+                f"\n[RESEND]\n"
+                f"FROM: {self.from_email}\n"
+                f"TO: {email.strip()}\n"
+                f"Subject: {subject}\n"
+            )
 
             resend.api_key = api_key
             params = {

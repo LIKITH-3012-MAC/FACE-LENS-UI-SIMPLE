@@ -196,6 +196,7 @@ def recognize_frame_snapshot(payload: FrameRecognitionRequest, request: Request)
         roll_number = None
         department = None
         section = None
+        year = None
         today_count = 0
         total_attendance_count = 0
         last_attendance_time = "Not marked"
@@ -209,6 +210,8 @@ def recognize_frame_snapshot(payload: FrameRecognitionRequest, request: Request)
                 roll_number = student_info.get("roll_number")
                 department = student_info.get("department")
                 section = student_info.get("section")
+                year = student_info.get("year") or student_info.get("academic_year")
+                student_id = student_info.get("student_id") or student_id
 
             # Retrieve real-time attendance stats from Cloud MySQL
             stats = repo.get_student_attendance_stats(student_id)
@@ -262,6 +265,7 @@ def recognize_frame_snapshot(payload: FrameRecognitionRequest, request: Request)
             "roll_number": roll_number,
             "department": department,
             "section": section,
+            "year": year,
             "recognized": recognized,
             "distance": distance,
             "tolerance": det.get("tolerance", recognition_service.tolerance),

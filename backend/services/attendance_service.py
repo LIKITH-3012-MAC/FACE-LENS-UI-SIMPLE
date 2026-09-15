@@ -78,27 +78,36 @@ class AttendanceService:
         time_str = cur_time.strftime("%H:%M:%S")
         date_str = str(cur_date)
 
-        # 1. Fetch student info from Cloud MySQL
+        # 1. Fetch student info dynamically from Cloud MySQL
         student = repo.get_student_by_id(student_id)
+        canonical_student_id = student["student_id"] if student else student_id
         student_name = student["name"] if student else student_id
+        student_roll = student.get("roll_number", "") if student else ""
+        student_dept = student.get("department", "") if student else ""
+        student_year = student.get("year") or student.get("academic_year", "") if student else ""
+        student_section = student.get("section", "") if student else ""
+        student_email = (student.get("email") or "").strip() if student else None
 
-        # 2. In-memory cooldown check
-        last_marked = self.cooldown_cache.get(student_id)
+        # Determine display identifier (prefer full roll number if available)
+        display_id = student_roll if (student_roll and (len(student_roll) > len(canonical_student_id) or student_roll.startswith("2473A"))) else canonical_student_id
+
+        # 2. In-memory cooldown check per canonical student ID
+        last_marked = self.cooldown_cache.get(canonical_student_id)
         if last_marked and (now - last_marked).total_seconds() < self.cooldown_seconds:
             return False, f"Cooldown active for {student_name}", None
 
         # 3. Cloud MySQL duplicate check for today
-        if repo.has_student_attended_today(student_id, date_str):
+        if repo.has_student_attended_today(canonical_student_id, date_str):
             print(f"\n[ATTENDANCE]\n{student_name} already marked today.\nNo duplicate record created.\n")
-            self.cooldown_cache[student_id] = now
+            self.cooldown_cache[canonical_student_id] = now
             return False, f"{student_name} already marked today", None
 
         # 4. Evaluate Present vs Late
         status = self.evaluate_status(cur_time)
 
-        # 5. Insert into Cloud MySQL attendance table
+        # 5. Insert into Cloud MySQL attendance table using canonical foreign key
         ok, record = repo.insert_attendance_record(
-            student_id=student_id,
+            student_id=canonical_student_id,
             attendance_date=date_str,
             attendance_time=time_str,
             status=status,
@@ -111,41 +120,45 @@ class AttendanceService:
         )
 
         if ok and record:
-            self.cooldown_cache[student_id] = now
-            self.reset_streak(student_id)
+            self.cooldown_cache[canonical_student_id] = now
+            self.reset_streak(canonical_student_id)
 
-            # Retrieve updated stats
-            stats = repo.get_student_attendance_stats(student_id, date_str)
+            # Retrieve updated stats from Cloud MySQL
+            stats = repo.get_student_attendance_stats(canonical_student_id, date_str)
             today_count = stats.get("today_count", 1)
             total_count = stats.get("total_attendance_count", 1)
             last_attendance_time = stats.get("last_attendance_time", time_str)
 
-            # Section 21 Required Terminal Logging
-            if latitude is not None and longitude is not None:
-                acc_part = f", Acc {location_accuracy:.1f}m" if location_accuracy is not None else ""
-                loc_str = f"Lat {latitude:.6f}, Lon {longitude:.6f}{acc_part}"
-            else:
-                loc_str = "Not Available"
+            # Terminal Logging as required
             print(
-                f"\n[FACE] Recognized student\n"
-                f"[FACE] Student ID: {student_id}\n"
+                f"\n[FACE] Recognized Student\n"
+                f"[FACE] Student ID: {display_id}\n"
                 f"[FACE] Name: {student_name}\n"
                 f"[FACE] Distance: {face_distance:.2f}\n"
-                f"[FACE] Tolerance: 0.50\n\n"
+                f"[FACE] Tolerance: 0.50\n"
+            )
+            if student_email and "@" in student_email:
+                print(
+                    f"[MYSQL] Student email resolved\n"
+                    f"[MYSQL] Email: {student_email}\n"
+                )
+            else:
+                print(
+                    f"[MYSQL] No student email found for {display_id}\n"
+                )
+
+            print(
+                f"[ATTENDANCE] Attendance inserted successfully\n"
                 f"[ATTENDANCE] {'Manual confirmation received' if mode.lower() == 'manual' else 'Automatic attendance processed'}\n"
                 f"[ATTENDANCE] Date: {date_str}\n"
                 f"[ATTENDANCE] Time: {time_str} IST\n"
-                f"[ATTENDANCE] Location: {loc_str}\n"
-                f"[ATTENDANCE] IP: {ip_address or 'Local'}\n\n"
-                f"[MYSQL] Attendance inserted successfully\n"
                 f"[MYSQL] Today's count: {today_count}\n"
                 f"[MYSQL] Total count: {total_count}\n"
             )
 
-            # 6. Resend Email Notification Dispatch (Section 3 & 4)
+            # 6. Resend Email Notification Dispatch (DYNAMIC RECIPIENT FROM MySQL)
             # Only sent after database insertion succeeds. Email failure does NOT rollback attendance.
             email_notification = "skipped"
-            student_email = student.get("email") if student else None
 
             if student_email and "@" in student_email:
                 email_date = now.strftime("%d %B %Y")
@@ -153,10 +166,10 @@ class AttendanceService:
 
                 email_ok, email_msg, resend_id = email_service.send_attendance_notification(
                     student_name=student_name,
-                    student_id=student_id,
-                    roll_number=student.get("roll_number", ""),
-                    department=student.get("department", ""),
-                    section=student.get("section", ""),
+                    student_id=display_id,
+                    roll_number=student_roll or display_id,
+                    department=student_dept,
+                    section=student_section,
                     email=student_email,
                     attendance_date=email_date,
                     attendance_time=email_time,
@@ -167,17 +180,18 @@ class AttendanceService:
                     longitude=longitude,
                     location_accuracy=location_accuracy,
                     today_count=today_count,
-                    total_attendance_count=total_count
+                    total_attendance_count=total_count,
+                    year=student_year
                 )
                 email_notification = "sent" if email_ok else "failed"
             else:
-                print(f"[RESEND] No registered email address found for student {student_id}. Notification skipped.\n")
+                print(f"[RESEND] No registered email address found for student {display_id}. Notification skipped.\n")
 
             enhanced_record = {
                 **record,
-                "student_id": student_id,
+                "student_id": canonical_student_id,
                 "name": student_name,
-                "roll_number": student.get("roll_number", "") if student else "",
+                "roll_number": student_roll,
                 "department": student.get("department", "") if student else "",
                 "section": student.get("section", "") if student else "",
                 "email": student_email,
