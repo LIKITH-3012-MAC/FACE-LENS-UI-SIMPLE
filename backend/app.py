@@ -53,13 +53,14 @@ app = FastAPI(
 
 # CORS Configuration
 allowed_origins = [
+    "https://face-lens-ui-simple.vercel.app",
     settings.FRONTEND_URL,
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://localhost:3000",
 ]
-# Filter out duplicates and blanks
-origins = list(set([o for o in allowed_origins if o]))
+# Filter out duplicates and blanks, stripping trailing slashes for strict origin matching
+origins = list(set([o.rstrip("/") for o in allowed_origins if o]))
 
 app.add_middleware(
     CORSMiddleware,
