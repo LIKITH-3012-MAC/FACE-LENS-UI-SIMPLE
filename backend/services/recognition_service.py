@@ -15,12 +15,16 @@ from backend.database.repository import repo
 logger = logging.getLogger("smart_attendance.recognition_service")
 
 
-def get_face_recognition():
+_bootstrap_attempted = False
+
+
+def get_face_recognition(force_bootstrap: bool = False):
     """
     Returns the face_recognition module. If missing (e.g. on cloud Linux containers),
-    automatically bootstraps pre-compiled binary wheel (dlib-bin) without C++ compilation.
+    automatically bootstraps pre-compiled binary wheel (dlib-bin) without C++ compilation
+    and installs the official models from git.
     """
-    global face_recognition
+    global face_recognition, _bootstrap_attempted
     if face_recognition is not None:
         return face_recognition
 
@@ -28,8 +32,13 @@ def get_face_recognition():
         import face_recognition as fr
         face_recognition = fr
         return face_recognition
-    except ImportError:
-        pass
+    except (ImportError, SystemExit, Exception):
+        face_recognition = None
+
+    if _bootstrap_attempted and not force_bootstrap:
+        return None
+
+    _bootstrap_attempted = True
 
     import sys
     import subprocess
@@ -37,22 +46,31 @@ def get_face_recognition():
 
     logger.info("face_recognition library not found. Attempting automatic precompiled wheel installation...")
     try:
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "--no-cache-dir", "dlib-bin", "face-recognition-models", "Click"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
+        res1 = subprocess.run(
+            [
+                sys.executable, "-m", "pip", "install", "--no-cache-dir",
+                "dlib-bin", "Click", "git+https://github.com/ageitgey/face_recognition_models.git"
+            ],
+            capture_output=True,
+            text=True
         )
-        subprocess.check_call(
+        if res1.returncode != 0:
+            logger.warning(f"Bootstrap step 1 notice: {res1.stderr.strip() or res1.stdout.strip()}")
+
+        res2 = subprocess.run(
             [sys.executable, "-m", "pip", "install", "--no-cache-dir", "face-recognition", "--no-deps"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
+            capture_output=True,
+            text=True
         )
+        if res2.returncode != 0:
+            logger.warning(f"Bootstrap step 2 notice: {res2.stderr.strip() or res2.stdout.strip()}")
+
         importlib.invalidate_caches()
         import face_recognition as fr
         face_recognition = fr
         logger.info("Successfully installed and imported face_recognition library.")
         return face_recognition
-    except Exception as e:
+    except (Exception, SystemExit) as e:
         logger.error(f"Failed to auto-bootstrap face_recognition: {e}")
         face_recognition = None
         return None
