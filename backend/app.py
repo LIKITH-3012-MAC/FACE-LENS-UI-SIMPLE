@@ -22,7 +22,8 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing Smart Attendance System...")
     init_connection_pool()
 
-    from backend.services.recognition_service import recognition_service
+    from backend.services.recognition_service import recognition_service, get_face_recognition
+    get_face_recognition()
     students = execute_query("SELECT id FROM students", fetchall=True) or []
     encodings_count = recognition_service.load_registered_students()
 

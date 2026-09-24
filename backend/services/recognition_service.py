@@ -14,6 +14,49 @@ from backend.database.repository import repo
 
 logger = logging.getLogger("smart_attendance.recognition_service")
 
+
+def get_face_recognition():
+    """
+    Returns the face_recognition module. If missing (e.g. on cloud Linux containers),
+    automatically bootstraps pre-compiled binary wheel (dlib-bin) without C++ compilation.
+    """
+    global face_recognition
+    if face_recognition is not None:
+        return face_recognition
+
+    try:
+        import face_recognition as fr
+        face_recognition = fr
+        return face_recognition
+    except ImportError:
+        pass
+
+    import sys
+    import subprocess
+    import importlib
+
+    logger.info("face_recognition library not found. Attempting automatic precompiled wheel installation...")
+    try:
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "--no-cache-dir", "dlib-bin", "face-recognition-models", "Click"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "--no-cache-dir", "face-recognition", "--no-deps"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        importlib.invalidate_caches()
+        import face_recognition as fr
+        face_recognition = fr
+        logger.info("Successfully installed and imported face_recognition library.")
+        return face_recognition
+    except Exception as e:
+        logger.error(f"Failed to auto-bootstrap face_recognition: {e}")
+        face_recognition = None
+        return None
+
 class RecognitionService:
     """
     128-Dimensional Face Encoding & Recognition Engine (Section 25).
@@ -35,6 +78,7 @@ class RecognitionService:
         self.known_names: List[str] = []
         self.is_loaded: bool = False
 
+        get_face_recognition()
         self.load_registered_students()
 
     def load_registered_students(self) -> int:
@@ -72,17 +116,18 @@ class RecognitionService:
         Detect face and generate 128-D encoding for a single image.
         Returns 128-D vector if exactly 1 face is found, else None.
         """
-        if face_recognition is None:
+        fr = get_face_recognition()
+        if fr is None:
             logger.error("face_recognition library is not installed.")
             return None
 
         rgb_image = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-        locations = face_recognition.face_locations(rgb_image)
+        locations = fr.face_locations(rgb_image)
         if len(locations) != 1:
             logger.warning(f"Expected 1 face for reference encoding, found {len(locations)}")
             return None
 
-        encodings = face_recognition.face_encodings(rgb_image, locations)
+        encodings = fr.face_encodings(rgb_image, locations)
         if not encodings:
             return None
         return encodings[0]
@@ -105,7 +150,8 @@ class RecognitionService:
         if frame is None or frame.size == 0:
             return results
 
-        if face_recognition is None:
+        fr = get_face_recognition()
+        if fr is None:
             logger.error("face_recognition library is not installed.")
             return results
 
@@ -114,14 +160,14 @@ class RecognitionService:
         rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
 
         # Detect faces
-        face_locations = face_recognition.face_locations(rgb_small_frame)
+        face_locations = fr.face_locations(rgb_small_frame)
         num_faces = len(face_locations)
 
         if num_faces > 0 and settings.FACE_RECOGNITION_DEBUG:
             print(f"\n[FACE DETECTED]\nFaces: {num_faces}")
 
         # Generate encodings for detected faces
-        face_encodings = face_recognition.face_encodings(rgb_small_frame, face_locations)
+        face_encodings = fr.face_encodings(rgb_small_frame, face_locations)
 
         for face_encoding, face_location in zip(face_encodings, face_locations):
             # Scale coordinates back to original frame size
@@ -145,7 +191,7 @@ class RecognitionService:
                 continue
 
             # Calculate distance from every registered student
-            face_distances = face_recognition.face_distance(self.known_encodings, face_encoding)
+            face_distances = fr.face_distance(self.known_encodings, face_encoding)
 
             # Find closest registered student
             best_match_index = int(np.argmin(face_distances))

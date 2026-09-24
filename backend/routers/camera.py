@@ -15,7 +15,7 @@ except ImportError:
     face_recognition = None
 
 from backend.config import settings
-from backend.services.recognition_service import recognition_service
+from backend.services.recognition_service import recognition_service, get_face_recognition
 from backend.services.attendance_service import attendance_service
 from backend.utils.network import get_client_ip
 from backend.database.repository import repo
@@ -317,8 +317,9 @@ def validate_preview_frame(payload: PreviewValidationRequest):
 
     # Detect faces
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    if face_recognition is not None:
-        locations = face_recognition.face_locations(rgb)
+    fr = get_face_recognition()
+    if fr is not None:
+        locations = fr.face_locations(rgb)
     else:
         locations = []
 

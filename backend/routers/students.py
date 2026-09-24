@@ -14,7 +14,7 @@ except ImportError:
 
 from backend.config import settings
 from backend.services.camera_service import camera_manager
-from backend.services.recognition_service import recognition_service
+from backend.services.recognition_service import recognition_service, get_face_recognition
 from backend.database.connection import execute_query
 from backend.database.repository import repo
 from backend.schemas.common import ApiResponse
@@ -214,12 +214,13 @@ def enroll_single_face_image(student_id: str, frame: np.ndarray):
     if frame is None or frame.size == 0:
         return False, "Invalid image data received.", None
 
-    if face_recognition is None:
+    fr = get_face_recognition()
+    if fr is None:
         return False, "face_recognition library is not loaded on server.", None
 
     # Quality Checks
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    face_locations = face_recognition.face_locations(rgb_frame)
+    face_locations = fr.face_locations(rgb_frame)
 
     if len(face_locations) == 0:
         return False, "No face detected. Please look directly at the camera.", None
@@ -252,7 +253,7 @@ def enroll_single_face_image(student_id: str, frame: np.ndarray):
         return False, "Image is blurry. Please hold steady.", {"bbox": bbox, "blur": blur_score}
 
     # Generate 128-D encoding
-    encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+    encodings = fr.face_encodings(rgb_frame, face_locations)
     if not encodings:
         return False, "Could not extract facial features. Try adjusting camera angle.", {"bbox": bbox}
 
