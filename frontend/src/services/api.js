@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 // Configurable API base URL from Vite environment variable
-export const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+export const API_URL = import.meta.env.VITE_API_URL || 'https://face-lens-ui-simple.onrender.com';
 
 const client = axios.create({
   baseURL: API_URL,
