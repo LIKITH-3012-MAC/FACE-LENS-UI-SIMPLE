@@ -1090,3 +1090,4 @@ This project is open-source and available under the [MIT License](LICENSE).
   <sub>Built with ❤️ by <strong>Likith Naidu</strong> • Sakra-Lens Smart Attendance System</sub>
 </div>
 # FACE-LENS-UI-SIMPLE
+# FACE-LENS-UI-SIMPLE
